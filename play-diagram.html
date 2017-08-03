@@ -1,0 +1,1600 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="utf-8">
+	<title>Play diagram</title>
+	<meta name="description" content="Diagram and animate hockey plays">
+	<script src="//cdnjs.cloudflare.com/ajax/libs/d3/3.5.5/d3.min.js"></script>
+	<script type="text/javascript" src="play-diagram-assets/formatter.min.js"></script>
+	<script type="text/javascript" src="play-diagram-assets/rinkPlot.js"></script>
+	<link href="http://fonts.googleapis.com/css?family=Roboto:400,500" rel="stylesheet" type="text/css">
+	<link rel="stylesheet" type="text/css" href="play-diagram-assets/style.css">
+</head>
+<body>
+	<h1>Play diagram</h1>
+	<p class="intro">Use the timeline to diagram player and puck locations. You can also change player colours and labels.<br>Save your diagram by copying the URL — the URL changes each time you edit your diagram.</p>
+	<svg id="rink-svg"></svg>
+	<div id="message"></div>
+	<div id="table"></div>
+	<p class="made-by">Made by <a href="http://twitter.com/datarink" title="@datarink's Twitter profile">@datarink</a>, rink outline by <a href="http://twitter.com/alexgoogs" title="@alexgoog's Twitter profile">@alexgoogs</a></p>
+</body>
+<script>
+
+/*
+*
+* Configuration
+*
+*/
+
+var red = "red";
+var blue = "blue";
+var maxTimepoints = 100;
+
+var isDragging = false;
+
+var msgDefault = "";
+var msgPickPuckTimepoint = "Pick a player or location for the puck to travel to.";
+var msgPickDragPuckTimepoint = msgPickPuckTimepoint + " You can also drag the event to change when it occurred.";
+var msgPickPlayerTimepoint = "Pick a location for the player to skate to.";
+var msgPickDragPlayerTimepoint = msgPickPlayerTimepoint + " You can also drag the event to change when it occurred.";
+var msgMaxTimepoints = "This tool doesn't work with more than " + maxTimepoints + " events.";
+
+//
+// Rink configuration
+//
+
+var puckR = 3;
+var margin = {top: 2, left: 2, right: 2, bottom: 2};
+var rinkWidth = 200;
+var rinkHeight = 85;
+var rinkRadius = 28;
+var ftPerCell = 5;
+var cellSize = 20;
+
+//
+// Timeline configuration
+//
+
+var highlightCircleR = 9;
+var timepointCircleR = 5;
+
+var timelineWidth = 850;
+var timelineHeight = 40;
+var puckTimelineHeight = 70;
+
+/*
+*
+* Data
+*
+*/
+
+// Stores the active element in the timeline
+var activeTimepoint = {
+	timeline: null, // timeline: puck, player
+	player: null, // player: an id from playerData
+	t: null // time: a value from puckSeconds or playerSeconds
+}
+
+// Initialize player data
+var playerData = [];
+var playerSeconds = d3.range(0, 15 + 1, 1);
+var playerLabels = ["F1", "F2", "F3", "D1", "D2", "F1", "F2", "F3", "D1", "D2"];
+
+playerLabels.forEach(function(p, i) {
+	var colour = blue;
+	if (i > 4) { colour = red; }
+	playerData.push({
+		id: i + 1,
+		label: p,
+		colour: colour,
+		timepoints: [],
+		paths: []
+	});
+});
+
+// Initialize waypoint data
+playerData.forEach(function(p) {
+	playerSeconds.forEach(function(s) {
+		p.timepoints.push({
+			t: s,
+			x: null,
+			y: null
+		});
+	});
+});
+
+// Puck data
+var puckSeconds = d3.range(0, d3.max(playerSeconds) + 0.5, 0.5);
+var puckTimepoints = [];
+puckSeconds.forEach(function(s) {
+	puckTimepoints.push({
+		t: s,
+		type: null,
+		x: null,
+		y: null,
+		player: null
+	});
+});
+
+//
+// Scales
+//
+
+var x = d3.scale.linear()
+	.domain([0, rinkWidth])
+	.range([0, (rinkWidth / ftPerCell) * cellSize]);
+var y = d3.scale.linear()
+	.domain([0, rinkHeight])
+	.range([(rinkHeight / ftPerCell) * cellSize, 0]);
+var tX = d3.scale.linear()
+	.domain(d3.extent(puckSeconds))
+	.range([(timepointCircleR + 17), timelineWidth - (timepointCircleR + 17)]); // +15px so there's space to display time labels and delete buttons
+
+/*
+*
+* Load initial data before initializing rink and timeline
+*
+*/
+
+parseUrl();
+
+d3.select("#rink-svg")
+	.style("height", (rinkHeight / ftPerCell) * cellSize + margin.top + margin.bottom + "px")
+	.style("width", (rinkWidth / ftPerCell) * cellSize + margin.left + margin.right + "px")
+	.append("g")
+		.attr("id", "rink")
+		.attr("transform", "translate(" + margin.left + "," + margin.top + ")");
+initRink();
+initTimeline();
+updateRinkAndTimeline();
+d3.select("#message").html(msgDefault);
+
+// Path toggle
+d3.select("#paths").on("mouseup", function() {
+		togglePaths();
+	});
+var arePathsVisible;
+togglePaths(true);
+
+
+// Use a listener on the html element to close the picker
+// The picker-mask, timepoint, etc. listeners will handle other operations like updating data
+d3.select("html").on("click", function() {
+		if (activeTimepoint.timeline != null) { closePicker(); };
+	});
+
+/*
+*
+* Draw left net and right net
+*
+*/
+var netWidth = (6.19792 / ftPerCell) * cellSize;
+var netDepth = (3.33333 / ftPerCell) * cellSize;
+var netX = (11/ ftPerCell) * cellSize - netDepth;
+var netY = 0.5 * ((rinkHeight / ftPerCell) * cellSize) - netWidth / 2;
+var netR = (1.66667 / ftPerCell) * cellSize;
+d3.select("#rink-map").append("path")
+	.attr("class", "net")
+	.attr("d", function() { return rounded_rect(netX, netY, netDepth, netWidth, netR, true, false, true, false); });
+d3.select("#rink-map").append("path")
+	.attr("class", "net")
+	.attr("d", function() { return rounded_rect(x.range()[1] - netX - netDepth, netY, netDepth, netWidth, netR, false, true, false, true); });
+
+/*
+*
+* Path toggle: true to show paths, false to hide paths, null to toggle state
+*
+*/
+
+function togglePaths(toBe) {
+	if (toBe == null) {
+		if (arePathsVisible) { toBe = false; }
+		else { toBe = true; }
+	}
+	if (toBe === true) {
+		d3.select("#rink").selectAll("g.player").selectAll("g.paths, g.timepoints").style("visibility", "visible");
+		d3.select("#puck").select("g.timepoints").selectAll("text").style("fill-opacity", "");
+		d3.select("#paths").text("Hide Paths");
+		arePathsVisible = true;
+	} else if (toBe === false) {
+		d3.select("#rink").selectAll("g.player").selectAll("g.paths, g.timepoints").style("visibility", "hidden");
+		d3.select("#puck").select("g.timepoints").selectAll("text").style("fill-opacity", 0);
+		d3.select("#paths").text("Show Paths");
+		arePathsVisible = false;
+	}
+}
+
+/*
+*
+* Player movement transitions
+*
+*/
+
+var animationTimer;
+var animationTime;
+var tick = 500;
+var startTimes;
+var definedPuckTimepoints;
+var lastDefinedTimepoint;
+d3.select("#play").on("click", function() {
+
+	// Get defined timepoints and find last defined timepoint to determine animation length
+	definedPuckTimepoints = puckTimepoints.filter(function(pt) { return pt.type != null; });
+	definedPuckTimepoints = definedPuckTimepoints.sort(function(a, b) { return a.t - b.t; });
+	lastDefinedTimepoint = d3.max(playerData, function(d) {
+		return d3.max(
+			d.timepoints.filter(function(pt) { return pt.x != null && pt.y != null; }),
+			function(pt) { return pt.t; }
+		);
+	});
+	lastDefinedTimepoint = d3.max([lastDefinedTimepoint, d3.max(definedPuckTimepoints, function(pt) { return pt.t; })]);
+
+	// Skip animation if there are no defined timepoints
+	if (!lastDefinedTimepoint) { return; }
+
+	// Record the time of each player's first timepoint
+	startTimes = [];
+	playerData.forEach(function(p) {
+		var firstTimepoint = p.timepoints.filter(function(pt) { return pt.x != null && pt.y != null; })[0];
+		if (firstTimepoint) {
+			startTimes.push({ player: p.id, t: firstTimepoint.t });
+			// For players who don't have a t0 timepoint, hide their marker text
+			if (firstTimepoint.t > 0) {
+				d3.select("#rink").selectAll("g.player").selectAll("g.marker").filter(function(d) { return d.id === p.id; })
+					.select("text")
+						.style("fill-opacity", 0);
+			}
+		}
+	});
+
+	// Reset and restart the animation
+	stopAnimation(true, true);
+});
+
+function animatePlay() {
+
+	updateRinkAndTimeline();
+
+	animationTime = 0;
+	startAnimationsAtTimepoint(); // Initial call so that animations start right away
+	animationTimer = setInterval(function() { startAnimationsAtTimepoint(); }, tick); // Delays before calling startAnimation for the first time
+
+	// Using attrTween and interpolate, set the thumb to t = 0 before restarting the transition
+	// http://bost.ocks.org/mike/transition/#animation
+	d3.select("#thumb")
+		.style("visibility", "visible")
+		.transition().duration(lastDefinedTimepoint * 1000).ease("linear")
+			.attrTween("x1", function() { return d3.interpolate(tX(0), tX(lastDefinedTimepoint)); })
+			.attrTween("x2", function() { return d3.interpolate(tX(0), tX(lastDefinedTimepoint)); });
+
+	// Hide timepoint labels in rink to clean up animation
+	d3.select("#rink").selectAll("text.timepoint")
+		.style("visibility", "hidden");
+
+	function startAnimationsAtTimepoint() {
+
+		/*
+		*
+		* Player animation
+		*
+		*/
+
+		// Start player animation - when a player's animation starts, his marker becomes visible
+		// To combine the translation and opacity transitions, apply the translation transition to the parent g.marker, and apply opacity to the child elements
+		// http://bl.ocks.org/mbostock/6081914
+		var startPlayers = startTimes.filter(function(s) { return s.t * 1000 === animationTime; })
+			.map(function(s) { return s.player; });
+		if (startPlayers.length > 0) {
+			d3.selectAll("g.player").filter(function(d) { return startPlayers.indexOf(d.id) >= 0; })
+				.selectAll("g.marker")
+					.each(function(d) { translatePlayer(d, 0); })
+					.select("text")
+						.transition().style("fill-opacity", 1);
+		}
+
+		/*
+		*
+		* Puck animation
+		*
+		*/
+
+		// Get timepoints
+		var targetTimepoint = definedPuckTimepoints.filter(function(pt) { return pt.t * 1000 === animationTime && pt.type != null; })[0];
+		var targetTimepointIdx = definedPuckTimepoints.map(function(pt) { return pt.t * 1000; }).indexOf(animationTime);
+		var sourceTimepoint = definedPuckTimepoints[targetTimepointIdx - 1];
+		var x1, y1, x2, y2;
+
+		// Get source target coordinates
+		if (sourceTimepoint) {
+			var coords = getCoords(sourceTimepoint);
+			x1 = coords[0];
+			y1 = coords[1];
+		}
+		if (targetTimepoint) {
+			var coords = getCoords(targetTimepoint);
+			x2 = coords[0];
+			y2 = coords[1];
+		}
+
+		// Draw puck trail
+		if (targetTimepoint && sourceTimepoint) {
+			d3.select("#puck").select("line")
+				.attr("x1", x1)
+				.attr("y1", y1)
+				.attr("x2", x2)
+				.attr("y2", y2)
+				.transition().ease("ease-in")
+					.styleTween("stroke-opacity", function() { return d3.interpolate(1, 0); });
+		}
+
+		// If there's a target timepoint hide puck carrier highlights from players without puck
+		if (targetTimepoint) {
+			d3.selectAll("g.player").select("circle").transition().style("stroke-opacity", 0);
+
+			var puck = d3.select("#puck").select("circle")
+				.attr("cx", x2)
+				.attr("cy", y2)
+				.style("opacity", 1);
+
+			// If the puck goes to a player, highlight puck carrier, then show and fade-out puck
+			if (targetTimepoint.type === "player") {
+				d3.selectAll("g.player").filter(function(p) { return p.id === targetTimepoint.player; })
+					.select("g.marker").select("circle")
+						.transition().style("stroke-opacity", 1);
+				// Only display the puck being passed if not at t = 0
+				// If at t = 0, the player starts with the puck, so we don't need to show the puck being passed
+				if (animationTime > 0) {
+					puck.transition().ease("ease-in")
+						.styleTween("opacity", function() { return d3.interpolate(1, 0); });
+				} else {
+					puck.style("opacity", 0);
+				}
+			}
+		}
+
+		// Stop animations when the last timepoint is exceeded
+		// Use animationTime > lastDefinedTimepoint so that we get 1 extra tick before stopping the animation - this gives time for the last transitions to finish
+		if (animationTime > lastDefinedTimepoint * 1000) { stopAnimation(false, false); }
+		animationTime += tick;
+	}
+
+	function getCoords(timepoint) {
+		var coords = [];
+		if (timepoint.type === "position") {
+			coords[0] = x(timepoint.x);
+			coords[1] = y(timepoint.y);
+		} else if (timepoint.type === "player") {
+			var playerMarker = d3.selectAll("g.player").filter(function(p) { return p.id === timepoint.player; }).select("g.marker");
+			var transform = playerMarker.attr("transform");
+			if (!transform || transform.indexOf("translate") < 0) {
+				coords = [null, null];
+			} else {
+				coords[0] = +transform.substring(transform.indexOf("(") + 1, transform.indexOf(","));
+				coords[1] = +transform.substring(transform.indexOf(",") + 1, transform.indexOf(")"));
+			}
+		}
+		return coords;
+	}
+}
+
+/*
+*
+* Clear animations and reset rink by:
+* 1. Apply a dummy transition to all elements that might have a transition
+* 2. When all dummy transitions have completed (compare the number of completed transitions to the number of dummy transitions), reset the rink
+*
+*/
+
+function stopAnimation(resetRink, restartAnim) {
+	clearInterval(animationTimer);
+	var completedTransitions = 0;
+	var animatedElements = d3.selectAll("#thumb, #puck circle, #puck line, g.marker, g.marker text, g.marker circle");
+	animatedElements.transition().duration(0)
+		.each("end", function() {
+			completedTransitions++;
+			if (completedTransitions === animatedElements.size() && resetRink === true) {
+				d3.select("#thumb").style("visibility", "hidden");
+				if (restartAnim === true) { animatePlay(); }
+				else {
+					updateRinkAndTimeline();
+				}
+			}
+		});
+	// Restore timepoint labelsn
+	d3.select("#rink").selectAll("text.timepoint").style("visibility", "visible");
+}
+
+/*
+*
+* Moves a player's marker along the specified path
+* Specify a player by providing his data; specify the path by providing the path element's index in his data
+*
+*/
+
+function translatePlayer(data, pathIdx) {
+	// Applies transitions to player markers
+	if (pathIdx < data.paths.length) {
+		var animGroup = d3.selectAll("g.player").filter(function(d) { return d.id === data.id; });
+		var animPath = animGroup.selectAll("path").filter(function(d) { return d.order === pathIdx; });
+		animGroup.select("g.marker").transition()
+			.duration(function(d) { return d.paths[pathIdx].duration * 1000; })
+			.ease("linear")
+			.attrTween("transform", translateAlong(animPath.node()))
+			.each("end", function(d) {
+				translatePlayer(d, pathIdx + 1);
+			});
+	}
+	// Translates marker along a path based on the path's length and time t
+	function translateAlong(path) {
+		var l = path.getTotalLength();
+		return function(d, i, a) {
+			return function(t) {
+			  var p = path.getPointAtLength(t * l);
+			  return "translate(" + p.x + "," + p.y + ")";
+			};
+		};
+	}
+}
+
+function initTimeline() {
+
+	var table = d3.select("#table");
+
+	/*
+	*
+	* Append header row
+	*
+	*/
+
+	var header = table.append("div")
+		.attr("class", "header");
+	header.append("a")
+		.attr("id", "play")
+		.attr("class", "button")
+		.attr("title", "Animate the play")
+		.style("display", "inline-block")
+		.text("Animate");
+	header.append("svg")
+		.style("height", "28px")
+		.style("width", timelineWidth + "px");
+
+	// Append time marker in the puck timeline
+	header.select("svg").append("line")
+		.attr("id", "thumb")
+		.attr("y1", 0)
+		.attr("y2", 28)
+		.attr("x1", tX.range()[0])
+		.attr("x2", tX.range()[0])
+		.style("visibility", "hidden");
+
+	// Append time marker labels
+	d3.select(".header").select("svg").selectAll("text.label")
+		.data(playerSeconds)
+		.enter().append("text")
+			.attr("class", "label")
+			.attr("x", function(d) { return tX(d); })
+			.attr("y", 15)
+			.text(function(d) {
+				var outString = d;
+				if (d < 10) { outString = "0" + outString; }
+				return "0:" + outString;
+			});
+
+	// Append a row for the puck and each player
+	table.selectAll("div.puck.row")
+		.data([puckTimepoints])
+		.enter().append("div")
+			.attr("class", "puck row");
+	table.selectAll("div.player.row")
+		.data(playerData)
+		.enter().append("div")
+			.attr("id", function(d) { return "player-" + d.id; })
+			.attr("class", "player row");
+
+	// Append columns to each row
+	var rows = table.selectAll(".row");
+	["colour-picker", "label", "timeline"].forEach(function(name) {
+		rows.append("div")
+			.attr("class", name + " cell");
+	});
+
+	/*
+	*
+	* Append content to label cell
+	*
+	*/
+
+	table.select(".puck.row").select(".label.cell").text("Puck");
+	table.selectAll(".player.row").select(".label.cell").append("input")
+		.attr("id", function(d) { return "label-" + d.id; })
+		.attr("type", "text")
+		.attr("maxlength", 3)
+		.property("value", function(d) { return d.label; })
+		.on("blur", function(d) {
+			// Update player label when text field loses focus - only update if the value has changed
+			var newLabel = document.getElementById("label-" + d.id).value;
+			if (d.label !== newLabel) { updatePlayerLabel(d.id, newLabel); }
+		});
+
+	// Append input masks
+	[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].forEach(function(i) {
+		initInputMask("label-" + i);
+	});
+
+
+	// Append puck carrier selector
+	table.selectAll(".player.row").select(".label.cell").append("div")
+		.attr("class", "carrier button")
+		.text(function(d) { return d.label; })
+		.style("display", "none")
+		.on("click", function(d) { updatePuckTimepoint("player", activeTimepoint.t, null, null, d.id); });
+
+	/*
+	*
+	* Append content to colour-picker cells
+	*
+	*/
+
+	table.selectAll(".colour-picker.cell").append("svg")
+		.attr("class", "colour-picker")
+		.attr("width", (2 * timepointCircleR + 2) + "px"); // +2px for stroke
+	table.selectAll(".player.row").select("svg.colour-picker")
+		.style("height", timelineHeight + "px")
+		.append("circle")
+			.attr("class", function(d) { return "colour-picker " + d.colour; })
+			.attr("cx", timepointCircleR + 1)
+			.attr("cy", timelineHeight - 28)
+			.attr("r", timepointCircleR)
+			.on("click", function(d) {
+				var newColour = "blue";
+				if (d.colour === "blue") { newColour = "red"; }
+				updatePlayerColour(d.id, newColour);
+			});
+	table.select(".puck.row").select("svg.colour-picker")
+		.style("height", puckTimelineHeight + "px");
+
+	/*
+	*
+	* Append content to timeline cells
+	*
+	*/
+
+	var timelines = table.selectAll(".timeline.cell").append("svg")
+		.attr("class", "timeline")
+		.attr("height", function(d) {
+			if (d.id) { return timelineHeight + "px"; }
+			else { return puckTimelineHeight + "px"; }
+		})
+		.attr("width", timelineWidth + "px");
+
+	// Append baselines
+	timelines.append("line")
+		.attr("class", "baseline")
+		.attr("x1", tX.range()[0])
+		.attr("x2", tX.range()[1]);
+	d3.selectAll(".player.row").select("line.baseline")
+		.attr("y1", timelineHeight - 28)
+		.attr("y2", timelineHeight - 28);
+	d3.select(".puck.row").select("line.baseline")
+		.attr("y1", puckTimelineHeight - 28)
+		.attr("y2", puckTimelineHeight - 28);
+
+	// Append highlight for the active element behind timepoints
+	table.selectAll("svg.timeline").append("circle")
+		.attr("class", "highlight")
+		.attr("r", highlightCircleR);
+	table.select(".puck.row").select("circle.highlight")
+		.attr("cy", puckTimelineHeight - 28);
+	table.selectAll(".player.row").select("circle.highlight")
+		.attr("cy", timelineHeight - 28);
+
+	// Append timepoints - bind timepoints to the puck and player waypoints, using t as the key
+	table.select(".puck.row").select("svg.timeline").selectAll("circle.timepoint")
+		.data(function(d) { return d; }, function(d) { return d.t; })
+		.enter().append("circle")
+			.attr("class", "timepoint")
+			.attr("cy", puckTimelineHeight - 28);
+	table.selectAll(".player.row").select("svg.timeline").selectAll("circle.timepoint")
+		.data(function(d) { return d.timepoints; }, function(d) { return d.t; })
+		.enter().append("circle")
+			.attr("class", "timepoint")
+			.attr("cy", timelineHeight - 28);
+	table.selectAll(".timeline.cell").selectAll("circle.timepoint")
+		.attr("cx", function(d) { return tX(d.t); })
+		.attr("r", timepointCircleR);
+
+	appendPuckTimepointListeners();
+	appendPlayerTimepointListeners();
+
+	// Append a delete link
+	var bW = 42;
+	var bH = 14;
+	var buttons = timelines.append("g")
+		.attr("class", "button delete");
+	buttons.append("rect")
+		.attr("x", -bW / 2)
+		.attr("y", function(d) {
+			if (d.id) { return timelineHeight - bH; }
+			else { return puckTimelineHeight - bH; }
+		})
+		.attr("rx", 2)
+		.attr("ry", 2)
+		.attr("width", bW)
+		.attr("height", bH);
+	buttons.append("text")
+		.attr("x", 0)
+		.attr("y", function(d) {
+			// Apply an offset instead of relying on alignment-baseline or dominant-baseline
+			var offset = 3.5;
+			if (d.id) { return timelineHeight - bH / 2 + offset; }
+			else { return puckTimelineHeight - bH / 2 + offset; }
+		})
+		.text("DELETE");
+
+	// Append delete listeners
+	table.select(".puck.row").select(".button.delete").on("click", function() { updatePuckTimepoint(null, activeTimepoint.t, null, null, null);	});
+	table.selectAll(".player.row").select(".button.delete").on("click", function() { updatePlayerTimepoint(activeTimepoint.player, activeTimepoint.t, null, null); });
+
+	// Append a mask on the rink that will capture mouse events
+	d3.select("#rink").append("rect")
+		.attr("id", "picker-mask")
+		.attr("width", x.range()[1])
+		.attr("height", y.range()[0])
+		.attr("rx", x(rinkRadius))
+		.attr("ry", y(0) - y(rinkRadius))
+		.style("visibility", "hidden");
+
+	clearActiveTimepointHighlight();
+}
+
+function initRink() {
+	// Append subgroups for rink to control layering
+	["rink-map", "players", "puck"].forEach(function(name) {
+		d3.select("#rink").append("g").attr("id", name);
+	});
+
+	// Append and style rink - remove rinkPlot.js's translation and draw a full outline for the rink
+	var drawRinkMap = new RINK_MAP({parent: d3.select("#rink-map"), fullRink: true, desiredWidth: (rinkHeight / ftPerCell) * cellSize, horizontal: true});
+	drawRinkMap();
+	d3.select("#rink-map").select("g.zones").attr("transform", "");
+	d3.select("#rink-map").append("rect")
+		.attr("width", x.range()[1])
+		.attr("height", y.range()[0])
+		.attr("rx", x(rinkRadius))
+		.attr("ry", y(0) - y(rinkRadius))
+		.style("fill", "none")
+		.style("stroke", "#ccc");
+
+	// Append groups and subgroups for each player to control layering
+	var players = d3.select("#players").selectAll("g.player")
+		.data(playerData, function(d) { return d.id; })
+		.enter().append("g")
+			.attr("class", "player");
+
+	["paths", "timepoints", "marker"].forEach(function(name) {
+		players.append("g").attr("class", name);
+		d3.select("#puck").append("g").attr("class", name);
+	});
+
+	// Append player marker elements
+	// Markers will be positioned as a group with transformations, so hardcode circle and text positions
+	d3.select("#players").selectAll("g.marker")
+		.append("circle")
+			.attr("cx", 0)
+			.attr("cy", 0)
+			.attr("r", 10)
+			.style("stroke-opacity", 0);
+
+	// Since the markers are so prominent, don't rely on alignment-baseline or dominant-baseline to vertically centre text
+	// because these properties are inconsistent across browsers. Apply a y-offset instead
+	d3.select("#players").selectAll("g.marker")
+		.append("text")
+			.attr("x", 0)
+			.attr("y", 4);
+
+	// Append puck marker elements
+	d3.select("#puck").append("circle")
+		.attr("r", puckR)
+		.style("opacity", 0);
+	d3.select("#puck").append("line")
+		.style("stroke-opacity", 0);
+}
+
+function updateRinkAndTimeline() {
+
+	// Bind updated data to player groups
+	// Since playerData was initialized to always have 10 players, player groups will never enter or exit
+	var players = d3.select("#players").selectAll("g.player")
+		.data(playerData, function(d) { return d.id; });
+	players.attr("class", function(d) { return "player " + d.colour; });
+
+	// Update paths in the path groups and points in the point group
+	// Using select() propagates the updated g.player data to g.paths: http://stackoverflow.com/questions/10129432/inheritance-in-data-joins
+	var paths = players.select("g.paths").selectAll("path.skater")
+		.data(function(d) { return d.paths; }, function(p) { return p.order + p.dString; });
+	paths.exit().remove();
+	paths.enter().append("path")
+		.attr("class", "skater");
+	paths.attr("d", function(d) { return d.dString; });
+
+	// Defined player timepoints
+	var timepoints = players.select("g.timepoints").selectAll("text.timepoint")
+		.data(function(d) {
+			return d.timepoints.filter(function(pt) { return pt.x != null && pt.y != null; }); }
+		,function(pt) { return pt.t; })
+	timepoints.exit().remove();
+	timepoints.enter().append("text")
+		.attr("class", "timepoint");
+
+	// Defined puck timepoints
+	var timepoints = d3.select("#puck").select("g.timepoints").selectAll("text.timepoint")
+		.data(puckTimepoints.filter(function(d) { return d.type === "position"; }), function(d) { return d.t; });
+	timepoints.exit().remove();
+	timepoints.enter().append("text")
+		.attr("class", "timepoint");
+
+	// Player and puck waypoints
+	timepoints = d3.select("#rink").selectAll("text.timepoint");
+	timepoints.attr("x", function(d) { return x(d.x); })
+		.attr("y", function(d) { return y(d.y); })
+		.text(function(d) { return d.t; });
+
+	// Update markers - hide markers for players with no waypoints
+	// Set marker text and move markers to the first defined timepoint's position
+	var markers = players.select("g.marker");
+	markers.style("visibility", function(d) {
+			var definedTimepoints = d.timepoints.filter(function(pt) { return pt.x != null && pt.y != null; });
+			if (definedTimepoints.length > 0) { return "visible"; }
+			else { return "hidden"; }
+		})
+		.attr("transform", function(d) {
+			var definedTimepoints = d.timepoints.filter(function(pt) { return pt.x != null && pt.y != null; });
+			if (definedTimepoints.length > 0) {
+				return "translate(" + x(definedTimepoints[0].x) + "," + y(definedTimepoints[0].y) + ")";
+			} else { return ""; }
+		})
+		.select("text")
+			.text(function(d) { return d.label; });
+
+	// Show the puck carrier highlight if there's a carrier at t = 0
+	// Or show the puck position if it has a position at t = 0
+	markers.select("circle").style("stroke-opacity", 0);
+	d3.select("#puck").select("circle").style("opacity", 0);
+	d3.select("#puck").select("line").style("stroke-opacity", 0);
+	if (puckTimepoints[0].type === "player") {
+		markers.filter(function(d) { return d.id === puckTimepoints[0].player; }).select("circle")
+			.style("stroke-opacity", 1);
+	} else if (puckTimepoints[0].type === "position") {
+		d3.select("#puck").select("circle")
+			.attr("cx", x(puckTimepoints[0].x))
+			.attr("cy", y(puckTimepoints[0].y))
+			.style("opacity", 1);
+	}
+
+	/*
+	*
+	* Update timeline
+	*
+	*/
+
+	// Bind data to player timepoints
+	var rows = d3.select("#table").selectAll(".player.row")
+		.data(playerData, function(d) { return d.id; });
+	var timepoints = d3.selectAll(".player.row").selectAll("circle.timepoint")
+		.data(function(d) { return d.timepoints; }, function(p) { return p.t; });
+	timepoints.classed("defined", function(d) {
+			if (d.x == null || d.y == null) { return false; }
+			else { return true; }
+		});
+
+	// Bind data to puck timepoints - only position waypoints are displayed in the rink
+	timepoints = d3.select("#table").select(".puck.row").select("svg.timeline").selectAll("circle.timepoint")
+		.data(puckTimepoints, function(d) { return d.t; });
+	timepoints.classed("defined", function(d) {
+			if (d.type == null) { return false; }
+			else { return true; }
+		});
+
+	// Update labels on the puck carrier selectors
+	 d3.select("#table").selectAll(".button.carrier")
+		.text(function(d) { return d.label; })
+
+	// Update puck carrier labels
+	var labels = d3.select("#table").select(".puck.row").select("svg.timeline").selectAll("text.carrier")
+		.data(puckTimepoints.filter(function(d) { return d.type === "player"; }), function(d) { return d.t; });
+	labels.exit().remove();
+	labels.enter().append("text")
+		.attr("class", "carrier")
+		.attr("y", puckTimelineHeight - 30);
+	labels.attr("x", function(d) { return tX(d.t); })
+		.attr("transform", function(d) {
+			return "translate(0 -10) rotate(-45 " + tX(d.t) + " " + (puckTimelineHeight - 30) + ")";
+		})
+		.style("fill", function(d) {
+			return playerData.filter(function(p) { return p.id === d.player; })[0].colour;
+		})
+		.text(function(d) {
+			return playerData.filter(function(p) { return p.id === d.player; })[0].label;
+		});
+
+	// Update colour pickers
+	d3.select("#table").selectAll("svg.colour-picker").select("circle.colour-picker")
+		.attr("class", function(d) { return "colour-picker " + d.colour; });
+
+	updateUrl();
+};
+
+function appendPlayerTimepointListeners() {
+	// Click listeners
+	d3.select("#table").selectAll(".player.row").selectAll("circle.timepoint").on("click", function(clicked) {
+
+		var clickedPlayerId = this.parentNode.__data__.id;
+
+		// If a timepoint is clicked, and the timepoint is not already active, then open the picker
+		// Otherwise, let the onClick listener for the html element close the picker
+		if (activeTimepoint.timeline !== "player"
+			|| (activeTimepoint.timeline === "player" && (activeTimepoint.player !== clickedPlayerId || activeTimepoint.t !== clicked.t))) {
+
+			activeTimepoint.timeline = "player";
+			activeTimepoint.t = clicked.t;
+			activeTimepoint.player = clickedPlayerId;
+
+			// Open the picker for the new active timepoint if the maximum number of timepoints hasn't been reached
+			// Also open the picker if a defined timepoint is clicked so the user can edit/delete it
+			if (getTotalDefinedTimepoints() < maxTimepoints || d3.select(this).classed("defined") === true) {
+				highlightActiveTimepoint();
+				openPicker();
+			} else {
+				clearActiveTimepoint();
+				displayMessage(msgMaxTimepoints);
+				setTimeout(function() { displayMessage(msgDefault); }, 2000);
+			}
+			// Don't trigger the onClick listener for the html element, which closes the picker
+			d3.event.stopPropagation();
+		}
+	});
+
+	/*
+	*
+	* Drag listener
+	*
+	*/
+
+	var dragData;
+	var dragPlayer;
+	var isDefined;
+	var targetT;
+	var undefinedTimes;
+	var dragListener = d3.behavior.drag()
+		.on("dragstart", function() {
+			isDragging = false;
+			stopAnimation(true, false);
+
+			// Remove any left over drag-point effects
+			d3.selectAll("#drag-point").remove();
+
+			dragPlayer = this.parentNode.__data__.id;
+			dragData = this.__data__;
+			targetT = dragData.t;
+
+			// Cancel drag events if the dragged timepoint is not defined, or if the active timepoint is a puck timepoint
+			// If there's an active timepoint, then only the active timepoint can be dragged
+			isDefined = true;
+			if (dragData.x == null || dragData.y == null || activeTimepoint.timeline === "puck" ||
+			(activeTimepoint.timeline === "player" && (activeTimepoint.player !== dragPlayer || activeTimepoint.t !== dragData.t))) {
+				isDefined = false;
+				dragPlayer = null;
+				dragData = null;
+				targetT = null;
+				return;
+			}
+
+			// If paths are currently hidden, display them
+			if (!arePathsVisible) {
+				d3.select("#rink").selectAll("g.player").selectAll("g.paths, g.timepoints").style("visibility", "visible");
+				arePathsVisible = true;
+			}
+
+			// Get valid targets - all undefined times
+			var undefinedTimepoints = d3.select(this.parentNode).selectAll("circle.timepoint:not(.defined)");
+			undefinedTimes = undefinedTimepoints.data().map(function(pt) { return pt.t; });
+
+			// Append a marker to drag
+			var mX = d3.mouse(this)[0];
+			var dragPt = d3.select(this.parentNode).append("circle")
+				.attr("id", "drag-point")
+				.attr("r", highlightCircleR)
+				.attr("cx", mX)
+				.attr("cy", timelineHeight - 28)
+				.style("visibility", "hidden"); // Start off hidden so the timepoint click listener can fire
+		})
+		.on("drag", function() {
+			isDragging = true;
+
+			if (!isDefined || activeTimepoint == null) { return; } // Cancel drag events if the dragged timepoint is not defined. Also cancel if there's an active timepoint
+
+			var mX = d3.mouse(this)[0];
+			d3.select("#drag-point")
+				.attr("cx", mX)
+				.style("visibility", "visible");
+
+			// Check if user is within .15 seconds of a timepoint
+			var rounded = Math.round(tX.invert(mX) * 100) / 100; // Round to the nearest .01 second
+			var decimal = Math.round((rounded % 1) * 100) / 100; // Gets the decimal portion of number
+			var isClose = false;
+			if (decimal <= 0 + 0.15 || decimal >= 1 - 0.15) { isClose = true; }
+
+			if (isClose) {
+				// When rounded is near a multiple of 1 (i.e., user is near a timepoint), set rounded to the nearest multiple of 1
+				rounded = Math.round(rounded);
+
+				if (undefinedTimes.indexOf(rounded) < 0) {
+					// If the timepoint at t = rounded is defined, then reset targetT to the initial dragged timepoint
+					targetT = dragData.t;
+					d3.select(this.parentNode).selectAll("circle.timepoint:not(.defined)").style("stroke", "");
+				} else if (rounded !== targetT) {
+					// If the timepoint at t = rounded is undefined, and rounded != the current targetT, then update targetT to rounded
+					targetT = rounded;
+					// Clear existing highlights and apply highlight to new target
+					d3.select(this.parentNode).selectAll("circle.timepoint:not(.defined)").style("stroke", "");
+					var target = d3.select(this.parentNode).selectAll("circle.timepoint:not(.defined)").filter(function(pt) { return pt.t === targetT; });
+					target.style("stroke-width", 2)
+						.style("stroke", "#222");
+				}
+			} else if (!isClose) {
+				// If rounded is not a whole number (i.e., user is not near a timepoint), then reset targetT to the initial dragged timepoint
+				targetT = dragData.t;
+				d3.select(this.parentNode).selectAll("circle.timepoint:not(.defined)")
+					.style("stroke-width", "")
+					.style("stroke", "");
+			}
+		})
+		.on("dragend", function() {
+			// Don't close the picker if the user clicked without really dragging - let the click listener show/hide the picker
+			if (isDragging) { closePicker(); }
+			isDragging = false;
+
+			if (!isDefined) { return; } // Cancel drag events if the dragged timepoint is not defined
+
+			// Transition drag-point to the target - especially needed to highlight the case where the drag-point returns to its starting point (because user chose an invalid target)
+			d3.select("#drag-point").transition().duration(125)
+				.attr("cx", tX(targetT))
+				.each("end", function() { d3.select(this).remove(); });
+			// Remove highlight effect on target timepoint
+			d3.select("#player-" + dragPlayer).selectAll("circle.timepoint")
+				.style("stroke-width", "")
+				.style("stroke", "");
+			// Update data
+			updatePlayerTimepoint(dragPlayer, dragData.t, null, null);
+			updatePlayerTimepoint(dragPlayer, targetT, dragData.x, dragData.y);
+			// Reset all the drag variables
+			dragPlayer = null;
+			dragData = null;
+			targetT = null;
+			undefinedTimes = null;
+		});
+	d3.select("#table").selectAll(".player.row").selectAll("circle.timepoint").call(dragListener);
+}
+
+function appendPuckTimepointListeners() {
+	d3.select("#table").select(".puck.row").selectAll("circle.timepoint").on("click", function(clicked) {
+		// If a timepoint is clicked, and the timepoint is not already active, then open the picker
+		// Otherwise, let the onClick listener for the html element close the picker
+		if (activeTimepoint.timeline !== "puck" || (activeTimepoint.timeline === "puck" && activeTimepoint.t !== clicked.t)) {
+			activeTimepoint.timeline = "puck";
+			activeTimepoint.t = clicked.t;
+			activeTimepoint.player = null;
+			// Open the picker for the new active timepoint if the maximum number of timepoints hasn't been reached
+			// Also open the picker if a defined timepoint is clicked so the user can edit/delete it
+			if (getTotalDefinedTimepoints() < maxTimepoints || d3.select(this).classed("defined") === true) {
+				highlightActiveTimepoint();
+				openPicker();
+			} else {
+				clearActiveTimepoint();
+				displayMessage(msgMaxTimepoints);
+				setTimeout(function() { displayMessage(msgDefault); }, 2000);
+			}
+			// Don't trigger the onClick listener for the html element, which closes the picker
+			d3.event.stopPropagation();
+		}
+	});
+
+	/*
+	*
+	* Drag listener
+	*
+	*/
+
+	var dragData;
+	var isDefined;
+	var targetT;
+	var undefinedTimes;
+	var dragListener = d3.behavior.drag()
+		.on("dragstart", function() {
+			isDragging = false;
+			stopAnimation(true, false);
+
+			// Remove any left over drag-point effects
+			d3.selectAll("#drag-point").remove();
+
+			dragData = this.__data__;
+			targetT = dragData.t;
+
+			// Cancel drag events if the dragged timepoint is not defined, or if the active timepoint is a player timepoint
+			// If there's an active timepoint, then only the active timepoint can be dragged
+			isDefined = true;
+			if (dragData.type == null || activeTimepoint.timeline === "player" ||
+				(activeTimepoint.timeline === "puck" && activeTimepoint.t !== dragData.t)) {
+				isDefined = false;
+				dragData = null;
+				targetT = null;
+				return;
+			}
+
+			// Get valid targets - all undefined times
+			var undefinedTimepoints = d3.select(this.parentNode).selectAll("circle.timepoint:not(.defined)");
+			undefinedTimes = undefinedTimepoints.data().map(function(pt) { return pt.t; });
+
+			// Append a marker to dragged
+			var mX = d3.mouse(this)[0];
+			var dragPt = d3.select(this.parentNode).append("circle")
+				.attr("id", "drag-point")
+				.attr("r", highlightCircleR)
+				.attr("cy", puckTimelineHeight - 28)
+				.attr("cx", mX)
+				.style("visibility", "hidden");
+		})
+		.on("drag", function() {
+			isDragging = true;
+			if (!isDefined) { return; } // Cancel drag events if the dragged timepoint is not defined
+
+			var mX = d3.mouse(this)[0];
+			d3.select("#drag-point").attr("cx", mX)
+				.style("visibility", "visible");
+
+			// Check if user is within .15 seconds of a timepoint
+			var delta = 0.15;
+			var rounded = Math.round(tX.invert(mX) * 100) / 100; // Round to the nearest .01 second
+			var decimal = Math.round((rounded % 1) * 100) / 100; // Gets the decimal portion of number
+			var isClose = false;
+			if (decimal <= 0 + delta || decimal >= 1 - delta || (decimal <= 0.5 + delta && decimal >= 0.5 - delta)) { isClose = true; }
+
+			if (isClose) {
+				// When rounded is near a multiple of 0.5 (i.e., user is near a timepoint), set rounded to the nearest multiple of 0.5
+				rounded = Math.round(rounded / 0.5) * 0.5;
+
+				if (undefinedTimes.indexOf(rounded) < 0) {
+					// If the timepoint at t = rounded is defined, then reset targetT to the initial dragged timepoint
+					targetT = dragData.t;
+					d3.select(this.parentNode).selectAll("circle.timepoint:not(.defined)").style("stroke", "");
+				} else if (rounded !== targetT) {
+					// If the timepoint at t = rounded is undefined, and rounded != the current targetT, then update targetT to rounded
+					targetT = rounded;
+					// Clear existing highlights and apply highlight to new target
+					d3.select(this.parentNode).selectAll("circle.timepoint:not(.defined)").style("stroke", "");
+					var target = d3.select(this.parentNode).selectAll("circle.timepoint:not(.defined)").filter(function(pt) { return pt.t === targetT; });
+					target.style("stroke-width", 2)
+						.style("stroke", "black");
+				}
+			} else if (!isClose) {
+				// If rounded is not a whole number (i.e., user is not near a timepoint), then reset targetT to the initial dragged timepoint
+				targetT = dragData.t;
+				d3.select(this.parentNode).selectAll("circle.timepoint:not(.defined)")
+					.style("stroke-width", "")
+					.style("stroke", "");
+			}
+		})
+		.on("dragend", function() {
+			// Don't close the picker if the user clicked without really dragging - let the click listener show/hide the picker
+			if (isDragging) { closePicker(); }
+			isDragging = false;
+
+			if (!isDefined) { return; } // Cancel drag events if the dragged timepoint is not defined
+
+			// Transition drag-point to the target - especially needed to highlight the case where the drag-point returns to its starting point (because user chose an invalid target)
+			d3.select("#drag-point").transition().duration(125)
+				.attr("cx", tX(targetT))
+				.each("end", function() { d3.select(this).remove(); });
+			// Remove highlight effect on target timepoint
+			d3.select(".puck.row").selectAll("circle.timepoint")
+				.style("stroke-width", "")
+				.style("stroke", "");
+			// Update data
+			updatePuckTimepoint(null, dragData.t, null, null, null);
+			updatePuckTimepoint(dragData.type, targetT, dragData.x, dragData.y, dragData.player);
+			// Reset all the drag variables
+			dragData = null;
+			targetT = null;
+			undefinedTimes = null;
+		});
+	d3.select("#table").select(".puck.row").selectAll("circle.timepoint").call(dragListener);
+}
+
+function highlightActiveTimepoint() {
+	clearActiveTimepointHighlight();
+
+	var activeRow;
+	if (activeTimepoint.timeline === "puck") { activeRow = d3.select(".puck.row"); }
+	else if (activeTimepoint.timeline === "player") { activeRow = d3.select("#player-" + activeTimepoint.player); }
+
+	// Display active element highlight and the delete button
+	activeRow.select("circle.highlight")
+		.attr("cx", function(d) { return tX(activeTimepoint.t); })
+		.style("visibility", "visible");
+
+	var activeTimepointData = activeRow.selectAll("circle.timepoint").filter(function(pt) { return pt.t === activeTimepoint.t; })[0][0].__data__;
+
+	// Display delete button if the active timepoint is defined
+	if ((activeTimepoint.timeline === "puck" && activeTimepointData.type != null)
+		|| (activeTimepoint.timeline === "player" && activeTimepointData.x != null & activeTimepointData.y != null)) {
+		activeRow.select(".button.delete").selectAll("*")
+			.attr("transform", "translate(" + tX(activeTimepoint.t) + ",0)")
+			.style("visibility", "visible");
+	}
+
+	// Update instructions
+	if (activeTimepoint.timeline === "puck") {
+		if (activeTimepointData.type != null) { displayMessage(msgPickDragPuckTimepoint); }
+		else { displayMessage(msgPickPuckTimepoint); }
+	} else if (activeTimepoint.timeline === "player") {
+		if (activeTimepointData.x != null && activeTimepointData.y != null) { displayMessage(msgPickDragPlayerTimepoint); }
+		else { displayMessage(msgPickPlayerTimepoint); }
+	}
+}
+
+function clearActiveTimepointHighlight() {
+	d3.selectAll("svg.timeline").selectAll("circle.highlight")
+		.style("visibility", "hidden");
+	d3.selectAll("svg.timeline").selectAll(".button.delete").selectAll("*")
+		.style("visibility", "hidden");
+}
+
+function clearActiveTimepoint() {
+	activeTimepoint.timeline = null;
+	activeTimepoint.t = null;
+	activeTimepoint.player = null;
+	clearActiveTimepointHighlight();
+}
+
+function openPicker() {
+
+	stopAnimation(true, false);
+	togglePaths(true);
+
+	// Make picker elements visible
+	d3.select("#picker-mask")
+		.attr("class", "active")
+		.style("visibility", "visible");
+
+	// Move the picker marker; snap to the closest whole foot
+	var pxPerFt = cellSize / ftPerCell;
+	var mPos, mX, mY;
+	d3.select("#picker-mask").on("mousemove", function() {
+		mPos = d3.mouse(this);
+		mX = Math.round(mPos[0] / pxPerFt) * pxPerFt;
+		mY = Math.round(mPos[1] / pxPerFt) * pxPerFt;
+	});
+
+	// Update waypoint data with the picked position
+	d3.select("#picker-mask").on("click", function() {
+		if (activeTimepoint.timeline === "player") {
+			updatePlayerTimepoint(activeTimepoint.player, activeTimepoint.t, Math.round(x.invert(mX)), Math.round(y.invert(mY)));
+		} else if (activeTimepoint.timeline === "puck") {
+			updatePuckTimepoint("position", activeTimepoint.t, Math.round(x.invert(mX)), Math.round(y.invert(mY)), null);
+		}
+	});
+
+	// If the active timepoint is a puck timepoint or waypoint, display the puck carrier selectors and hide the label input fields
+	if (activeTimepoint.timeline === "puck") {
+		d3.select("#table").selectAll("input").style("display", "none");
+		d3.select("#table").selectAll(".carrier.button").style("display", "");
+	}
+}
+
+/*
+*
+* Closes the picker and clears the active element
+*
+*/
+
+function closePicker() {
+	// Hide picker elements on rink
+	d3.select("#picker-mask").on("mousemove", null);
+	d3.select("#picker-mask").on("click", null);
+	d3.select("#picker-mask")
+		.attr("class", "")
+		.style("visibility", "hidden");
+
+	// Hide puck carreir selectors and display the label input fields
+	d3.select("#table").selectAll(".carrier.button").style("display", "none");
+	d3.select("#table").selectAll("input").style("display", "");
+
+	// Clear active element and update messaging
+	clearActiveTimepoint();
+	displayMessage(msgDefault);
+}
+
+function updatePlayerTimepoint(player, t, x, y) {
+	var playerToUpdate = playerData.filter(function(d) { return d.id === player; })[0];
+	var existingIdx = -1;
+	var i = 0;
+	while (existingIdx < 0 && i < playerToUpdate.timepoints.length) {
+		if (playerToUpdate.timepoints[i].t === t) { existingIdx = i; }
+		else { i++; }
+	}
+	playerToUpdate.timepoints[existingIdx] = {t: t, x: x, y: y};
+	playerToUpdate.timepoints = playerToUpdate.timepoints.sort(function(a, b) { return a.t - b.t; });
+	generateDStrings(playerToUpdate.id);
+	updateRinkAndTimeline();
+}
+
+function updatePuckTimepoint(type, t, x, y, player) {
+	var updateIdx = -1;
+	var i = 0;
+	while (updateIdx < 0 && i < puckTimepoints.length) {
+		if (puckTimepoints[i].t === t) { updateIdx = i; }
+		else { i++; }
+	}
+	puckTimepoints[updateIdx] = { type: type, t: t, x: x, y: y, player: player };
+	puckTimepoints = puckTimepoints.sort(function(a, b) { return a.t - b.t; });
+	updateRinkAndTimeline();
+}
+
+function updatePlayerColour(player, newColour) {
+	var playerToUpdate = playerData.filter(function(d) { return d.id === player; })[0];
+	playerToUpdate.colour = newColour;
+	updateRinkAndTimeline();
+}
+
+function updatePlayerLabel(player, newLabel) {
+	var playerToUpdate = playerData.filter(function(d) { return d.id === player; })[0];
+	playerToUpdate.label = newLabel;
+	updateRinkAndTimeline();
+}
+
+function generateDStrings(playerId) {
+
+	// Create paths from defined timepoints
+	var definedTimepoints = playerData.filter(function(d) { return d.id === playerId; })[0].timepoints.filter(function(d) { return d.x != null && d.y != null; });
+	var paths = [];
+	for (var i = 0; i < definedTimepoints.length - 1; i++) {
+		var nextPoint = [];
+		if (i < definedTimepoints.length - 2) {
+			nextPoint = [definedTimepoints[i + 2].x, definedTimepoints[i + 2].y];
+		}
+		paths.push({
+			order: i,
+			start: [definedTimepoints[i].x, definedTimepoints[i].y],
+			end: [definedTimepoints[i + 1].x, definedTimepoints[i + 1].y],
+			next: nextPoint,
+			duration: definedTimepoints[i + 1].t - definedTimepoints[i].t
+		});
+	}
+
+	// Create the string for each path's d attribute
+	for (var i = 0; i < paths.length; i++) {
+
+		var ctrlPt = [x(paths[i].end[0]), y(paths[i].end[1])];
+
+		if (paths[i].start[0] === paths[i].end[0] && paths[i].start[1] === paths[i].end[1]) {
+			// Keep the ctrlPt at the endPt if the player is stationary
+		} else if (paths[i].next.length === 2) {
+			// Increasing delta will increase smoothing by increasing the ctrlPt's offset
+			var delta = 20;
+
+			var rise = y(paths[i].next[1]) - y(paths[i].end[1]);
+			rise *= -1; // Adjust rise since higher y values are plotted lower
+			var run = x(paths[i].next[0]) - x(paths[i].end[0]);
+			var slope = rise / run;
+
+			if (slope === 0) {
+				if (run >= 0) {
+					// If player will skate right, then ctrlPt is left
+					ctrlPt[0] -= delta;
+				} else {
+					// If player will skate left, then ctrlPt is right
+					ctrlPt[0] += delta;
+				}
+			} else if (slope == Number.POSITIVE_INFINITY || slope == Number.NEGATIVE_INFINITY) {
+				if (rise >= 0) {
+					// If player skates up, then ctrlPt is down
+					ctrlPt[1] += delta;
+				} else {
+					// If player skates down, then ctrlPt is up
+					ctrlPt[1] -= delta;
+				}
+			} else {
+
+				// To keep the ctrlPt close, deltaX and deltaY (the ctrlPt's offset) should not be larger than delta while maintaining the slope value
+				var deltaX, deltaY;
+				if (Math.abs(slope) <= 1) {
+					deltaX = delta;
+					deltaY = delta * Math.abs(slope);
+				} else {
+					deltaX = delta / Math.abs(slope);
+					deltaY = delta;
+				}
+
+				if (slope > 0 && run >= 0) {
+					// If player will skate up and right, then ctrlPt is down and left
+					ctrlPt[0] -= deltaX;
+					ctrlPt[1] += deltaY;
+				} else if (slope > 0 && run < 0) {
+					// If player will skate down and left, then ctrlPt is up and right
+					ctrlPt[0] += deltaX;
+					ctrlPt[1] -= deltaY;
+				} else if (slope < 0 && run >= 0) {
+					// If player will skate down and right, then ctrlPt is up and left
+					ctrlPt[0] -= deltaX;
+					ctrlPt[1] -= deltaY;
+				} else if (slope < 0 && run < 0) {
+					// If player will skate up and left, then ctrlPt is down and right
+					ctrlPt[0] += deltaX;
+					ctrlPt[1] += deltaY;
+				}
+			}
+
+			// Check if the ctrlPt is in the rink - if it isn't set the ctrlPt to the endpoint
+			if (isPointInRink(ctrlPt) === false ) {
+				ctrlPt = [x(paths[i].end[0]), y(paths[i].end[1])];
+			}
+
+			// To check where the ctrlPt is located
+			// d3.select("#rink").append("circle")
+			// 	.attr("class", "ctrlPt")
+			// 	.attr("cx", ctrlPt[0])
+			// 	.attr("cy", ctrlPt[1])
+			// 	.attr("r", 2)
+			// 	.attr("fill", "gold");
+		}
+		//d3.selectAll("circle.ctrlPt").remove();
+
+		var dString = "M" + x(paths[i].start[0]) + "," + y(paths[i].start[1]);
+		dString += " S" + ctrlPt[0] + "," + ctrlPt[1];
+		dString += " " + x(paths[i].end[0]) + "," + y(paths[i].end[1]);
+		paths[i].dString = dString;
+	}
+
+	playerData.filter(function(d) { return d.id === playerId; })[0].paths = paths;
+
+	// Check if a given point [x, y] is within the rink - coordinates should already be scaled to pixels (not feet)
+	function isPointInRink(point) {
+		var isInRink = false;
+		// Check if point is within the 4 circles
+		// Centers of the top-left, bottom-left, top-right, and bottom-right rink arcs
+		var centres = [];
+		centres[0] = [x(rinkRadius), y(rinkHeight) + y(rinkRadius)];
+		centres[1] = [x(rinkRadius), y(0) - y(rinkRadius)];
+		centres[2] = [x(rinkWidth) - x(rinkRadius), y(rinkHeight) + y(rinkRadius)];
+		centres[3] = [x(rinkWidth) - x(rinkRadius), y(0) - y(rinkRadius)];
+		var i = 0;
+		while (!isInRink && i < centres.length) {
+			var a2 = Math.pow(point[0] - centres[i][0], 2);
+			var b2 = Math.pow(point[1] - centres[i][1], 2);
+			var c2 = Math.pow(x(rinkRadius), 2);
+			if (a2 + b2 < c2) { isInRink = true; }
+			else { i++; }
+		};
+		// Check if point is in the rectangle that goes from one end of the rink to the other
+		if (!isInRink) {
+			if (point[0] > x(0) && point[0] < x(rinkWidth) && point[1] > y(rinkHeight) + y(rinkRadius) && point[1] < y(0) - y(rinkRadius)) {
+				isInRink = true;
+			}
+		}
+		// Check if point is in the rectangle that goes from one side (where benches are) of the rink to the other (where penalty boxes are)
+		if (!isInRink) {
+			if (point[0] > x(0) + x(rinkRadius) && point[0] < x(rinkWidth) - x(rinkRadius) && point[1] > y(rinkHeight) && point[1] < y(0)) {
+				isInRink = true;
+			}
+		}
+		return isInRink;
+	}
+}
+
+function parseUrl() {
+
+	// Some link shortening services (t.co) trim trailing semi-colons, so re-add the semi-colon if it's not the last character of the URL
+	var urlString = window.location.search.substring(1);
+	if (urlString.slice(-1) !== ";") {
+		urlString += ";";
+	}
+
+	// Separate and store the url parameters
+	var urlParameters = urlString.split("&");
+	urlParameters.forEach(function(p) {
+		var pId = p.substring(1, p.indexOf("="));
+		if (pId === "k") {
+			parsePuckParameters(p);
+		 } else if (+pId >= 1 && +pId <= 10) {
+		 	parsePlayerParameters(p, +pId);
+		 }
+	});
+
+	// Generate paths for players
+	playerData.forEach(function(d) {
+		generateDStrings(d.id);
+	});
+
+	/*
+	*
+	* Process the puck portion of the url
+	*
+	*/
+	function parsePuckParameters(url) {
+		// Split puck parameters into an array of timepoint strings
+		url = url.substring(url.indexOf("=") + 1);
+		var pts = url.split("+");
+		pts = pts.filter(function(d) { return d; }); // Filter out null values
+
+		// Update puckTimepoints with the url timepoint strings
+		pts.forEach(function(p, i) {
+
+			// Split each timepoint string into an array of individual elements
+			var ptData = p.split(",");
+
+			var targetPt = puckTimepoints.filter(function(d) { return d.t === +ptData[0]; })[0];
+			if (ptData[1] === "s") {
+				targetPt.type = "position";
+				targetPt.x = +ptData[2];
+				targetPt.y = +ptData[3];
+				targetPt.player = null;
+			} else if (ptData[1] === "y") {
+				targetPt.type = "player";
+				targetPt.x = null;
+				targetPt.y = null;
+				targetPt.player = +ptData[2];
+			}
+		});
+	}
+
+	/*
+	*
+	* Process the player portions of the url
+	*
+	*/
+	function parsePlayerParameters(url, playerId) {
+		// Split puck parameters into an array of timepoint strings
+		url = url.substring(url.indexOf("=") + 1);
+
+		var params = url.split(";");
+
+		var targetPlayer = playerData.filter(function(d) { return d.id === playerId; })[0];
+
+		var label = params[0];
+		targetPlayer.label = label;
+
+		if (params[1] === "r") { targetPlayer.colour = "red"; }
+		else { targetPlayer.colour = "blue"; }
+
+		var pts = params[2].split("+");
+		pts = pts.filter(function(d) { return d; }); // Filter out null values
+
+		pts.forEach(function(p, i) {
+
+			// Split each timepoint string into an array of individual elements
+			var ptData = p.split(",");
+			var targetPt = targetPlayer.timepoints.filter(function(d) { return d.t === +ptData[0]; })[0];
+			targetPt.x = +ptData[1];
+			targetPt.y = +ptData[2];
+		});
+	}
+}
+
+function updateUrl() {
+	var resultString = "pk=";
+	puckTimepoints.filter(function(pt) { return pt.type != null; }).forEach(function(pt, i) {
+		var ptString = "";
+		if (i > 0) { ptString += "+"; }
+		ptString += pt.t + ",";
+		if (pt.type === "position") { ptString += "s" + "," + pt.x + "," + pt.y; }
+		else if (pt.type === "player") { ptString += "y" + "," + pt.player; }
+		resultString += ptString;
+	});
+
+	playerData.forEach(function(p, i) {
+
+		var colourString = "b";
+		if (p.colour === "red") { colourString = "r"; }
+
+		var playerString = "&p" + p.id + "=" + p.label + ";" + colourString + ";";
+		resultString += playerString;
+
+		p.timepoints.filter(function(pt) { return pt.x != null & pt.y != null; }).forEach(function(pt, j) {
+			var ptString = "";
+			if (j > 0) { ptString += "+"; }
+			ptString += pt.t + "," + pt.x + "," + pt.y;
+			resultString += ptString;
+		});
+	});
+
+	// Replace the current url without creating a new history state
+	var newUrl = "play-diagram.html?" + resultString
+	window.history.replaceState(resultString, "Title", newUrl);
+}
+
+// Gets the total number of defined timepoints for puck and all players
+function getTotalDefinedTimepoints() {
+	var total = 0;
+	// Count number of defined puck timepoints
+	var definedTimepoints = puckTimepoints.filter(function(d) { return d.type != null; }).length;
+	total += definedTimepoints;
+	// Count number of defined player timepoints
+	playerData.forEach(function(p) {
+		definedTimepoints = p.timepoints.filter(function(d) { return d.x != null && d.y != null; }).length;
+		total += definedTimepoints;
+	});
+	return total;
+}
+
+/*
+*
+* Transition between messages
+*
+*/
+
+function displayMessage(msg) {
+	var currentMsg = d3.select("#message").html();
+	if (currentMsg !== msg) {
+		var fadeOutDuration = 150;
+		if (currentMsg === "") { fadeOutDuration = 0; }
+
+		d3.select("#message").transition().duration(fadeOutDuration)
+			.style("opacity", 0)
+			.each("end", function() {
+				d3.select(this)
+					.html(msg)
+					.transition().duration(150)
+						.style("opacity", 1);
+			});
+	}
+}
+
+/*
+*
+* Add input mask to the specified text field
+* Don't include the # character for the inputId
+*
+*/
+
+function initInputMask(inputId) {
+	new Formatter(document.getElementById(inputId), {
+		"pattern": "{{***}}",
+		"persistent": false
+	});
+}
+
+/*
+*
+* Draw rounded rectangle
+* http://stackoverflow.com/a/13505624
+*
+*
+*/
+
+function rounded_rect(x, y, w, h, r, tl, tr, bl, br) {
+	var retval;
+	retval  = "M" + (x + r) + "," + y;
+	retval += "h" + (w - 2*r);
+	if (tr) { retval += "a" + r + "," + r + " 0 0 1 " + r + "," + r; }
+	else { retval += "h" + r; retval += "v" + r; }
+	retval += "v" + (h - 2*r);
+	if (br) { retval += "a" + r + "," + r + " 0 0 1 " + -r + "," + r; }
+	else { retval += "v" + r; retval += "h" + -r; }
+	retval += "h" + (2*r - w);
+	if (bl) { retval += "a" + r + "," + r + " 0 0 1 " + -r + "," + -r; }
+	else { retval += "h" + -r; retval += "v" + -r; }
+	retval += "v" + (2*r - h);
+	if (tl) { retval += "a" + r + "," + r + " 0 0 1 " + r + "," + -r; }
+	else { retval += "v" + -r; retval += "h" + r; }
+	return retval += "z";
+}
+</script>
+<script>
+	(function(i,s,o,g,r,a,m){i['GoogleAnalyticsObject']=r;i[r]=i[r]||function(){
+		(i[r].q=i[r].q||[]).push(arguments)},i[r].l=1*new Date();a=s.createElement(o),
+		m=s.getElementsByTagName(o)[0];a.async=1;a.src=g;m.parentNode.insertBefore(a,m)
+	})(window,document,'script','//www.google-analytics.com/analytics.js','ga');
+	ga('create', 'UA-59931061-1', 'auto');
+	ga('send', 'pageview');
+</script>
+</html>

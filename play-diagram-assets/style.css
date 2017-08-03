@@ -1,0 +1,341 @@
+html {
+	width: 100%;
+
+	/* Prevent mobile devices from resizing font sizes */
+	/* http://stackoverflow.com/a/5540312 */
+	-webkit-text-size-adjust: 100%;
+	-moz-text-size-adjust: 100%;
+	-ms-text-size-adjust: 100%;
+}
+
+body {
+	color: #222;
+	font-family: Roboto, sans-serif;
+	font-size: 14px;
+	line-height: 24px;
+	margin: 20px auto 40px auto;
+	padding: 0 10px;
+	width: 940px;
+}
+
+#table, svg { /* Disable highlighting so it doesn't show up while the user is clicking */
+	-webkit-touch-callout: none;
+	-webkit-user-select: none;
+	-khtml-user-select: none;
+	-moz-user-select: none;
+	-ms-user-select: none;
+	user-select: none;
+}
+
+h1 {
+	font-weight: 400;
+	font-size: 24px;
+	line-height: 32px;
+	margin-bottom: 24px;
+}
+
+p {
+	margin: 0;
+}
+	p.made-by {
+		margin-top: 40px;
+	}
+	.made-by a {
+		display: inline-block;
+		color: blue;
+		text-decoration: none;
+		border-bottom: 2px solid #ddf;
+	}
+	.made-by a:hover {
+		color: blue;
+		border-bottom: 2px solid blue;
+	}
+
+	p.intro {
+		border-bottom: 1px solid #ccc;
+		padding-bottom: 30px;
+	}
+
+svg, #table {
+	font-family: Roboto, sans-serif;
+	font-size: 12px;
+	line-height: 12px;
+}
+
+#message {
+	color: #aaa;
+	height: 30px;
+	line-height: 30px;
+	margin: 30px 0 30px 0;
+	text-align: center;
+}
+
+#rink-svg {
+	display: block;
+	margin: 60px auto 0 auto;
+}
+
+/*
+*
+* Rink elements
+*
+*/
+
+g.player g.marker text {
+	font-weight: 500;
+	text-anchor: middle;
+}
+	g.player.blue g.marker text {
+		fill: blue;
+	}
+	g.player.red g.marker text {
+		fill: red;
+	}
+
+g.player g.marker circle {
+	fill: none;
+	stroke: #222;
+	stroke-width: 1px;
+}
+
+text.timepoint {
+	font-size: 10px;
+	text-anchor: middle;
+	dominant-baseline: middle;
+	fill-opacity: 0.4;
+}
+	g.player.blue text.timepoint {
+		fill: blue;
+	}
+	g.player.red text.timepoint {
+		fill: red;
+	}
+
+g.player path.skater {
+	fill: none;
+	stroke-opacity: 0.15;
+}
+	g.player.blue path.skater {
+		stroke: blue;
+	}
+	g.player.red path.skater {
+		stroke: red;
+	}
+
+#picker-mask {
+	fill: white; /* Need a fill to detect mouse events */
+	fill-opacity: 0;
+}
+	#picker-mask.active {
+		stroke: gold;
+		stroke-opacity: 0.25;
+		stroke-width: 4px;
+		cursor: crosshair;
+	}
+
+#puck circle {
+	fill: #222;
+}
+	#puck text.timepoint {
+		fill: #222;
+		fill-opacity: 0.4;
+	}
+	#puck line {
+		stroke: #222;
+		stroke-dasharray: 2,2;
+	}
+
+/*
+*
+* Timeline elements
+*
+*/
+
+.header svg {
+	vertical-align: middle;
+}
+
+text.label {
+	text-anchor: middle;
+	dominant-baseline: middle;
+	fill: #aaa;
+}
+
+.row {
+	height: 42px;
+}
+	.puck.row {
+		height: 72px;
+	}
+
+.cell {
+	display: inline-block;
+	vertical-align: middle;
+}
+	.cell.label {
+		width: 40px;
+		margin-right: 10px;
+		vertical-align: bottom;
+		padding-bottom: 24px;
+	}
+		.player.row .cell.label {
+			padding-bottom: 18px; /* Reduce padding to account for extra input field and button height */
+		}
+	.cell.colour-picker {
+		margin-right: 20px;
+	}
+
+line.baseline {
+	stroke: #ebebeb;
+}
+
+circle.colour-picker {
+	cursor: pointer;
+	fill-opacity: 0.2;
+	stroke-opacity: 0.4;
+}
+	circle.colour-picker.red {
+		fill: red;
+		stroke: red;
+	}
+	circle.colour-picker.blue {
+		fill: blue;
+		stroke: blue;
+	}
+	circle.colour-picker:hover {
+		fill-opacity: 0.4;
+	}
+	circle.highlight {
+		fill: #ffef99;
+		stroke-width: 2px;
+		stroke: gold;
+	}
+
+circle.timepoint {
+	fill: white; /* Need a fill so that it's clickable */
+	stroke: #ccc;
+	cursor: pointer;
+}
+	circle.timepoint.defined {
+		fill: #ccc;
+		stroke: #777;
+		cursor: -webkit-grab;
+		cursor: -moz-grab;
+		cursor: grab;
+	}
+	circle.timepoint:hover {
+		fill: #ebebeb;
+		stroke: #777;
+	}
+	circle.timepoint.defined:hover {
+		fill: #aaa;
+		stroke: #222;
+	}
+	#drag-point {
+		fill: gold;
+		fill-opacity: 0.5;
+		cursor: -webkit-grabbing;
+		cursor: -moz-grabbing;
+		cursor: grabbing;
+	}
+
+text.carrier {
+	font-size: 10px;
+}
+
+#thumb {
+	stroke: #ffef99;
+	stroke-width: 4px;
+}
+
+.button {
+	background: #ffef99;
+	border-radius: 2px;
+	border: 1px solid gold;
+	box-sizing: border-box;
+	color: #222;
+	cursor: pointer;
+	text-decoration: none;
+	line-height: 28px;
+}
+	.button:hover {
+		background: gold;
+	}
+	.button.carrier {
+		/* To keep player label in place when text field is replaced by button */
+		line-height: 22px;
+		margin-left: -5px;
+		padding-left: 5px;
+	}
+	#play {
+		display: inline-block;
+		margin-right: 10px;
+		text-align: center;
+		vertical-align: middle;
+		width: 72px;
+	}
+
+input[type=text] {
+	border: none;
+	border-bottom: 1px solid #ccc;
+	border-radius: 0;
+	box-sizing: content-box;
+	font-size: 12px;
+	padding: 0;
+	padding-bottom: 4px;
+	width: 40px;
+}
+	input[type=text]:focus {
+		outline: none;
+		border-bottom: 2px solid #aaa;
+		padding-bottom: 3px;
+	}
+
+.button.delete rect {
+	fill: #ffef99;
+	stroke: gold;
+}
+	.button.delete:hover rect {
+		fill: gold;
+	}
+	.button.delete text {
+		fill: #222;
+		font-size: 10px;
+		text-anchor: middle;
+	}
+
+/*
+*
+* Rink styling
+*
+*/
+
+.blue-line { /* Blue lines */
+    fill: #ebebeb;
+}
+rect.red-line { /* Goal crease */
+    fill: #ccc;
+}
+circle.red-line { /* Face off dots */
+    fill: #ebebeb;
+}
+.red-faceoff { /* Face off circles */
+    stroke: #ccc;
+}
+.rink-face { /* Use d3.js to draw a full rink-face instead */
+    display: none;
+}
+.goal-crease { /* Goal crease area */
+    fill: none;
+    stroke: #ccc;
+}
+.center-line {
+    fill: #ebebeb;
+}
+.neutral-faceoff { /* Center ice face off circle */
+    stroke: #ccc;
+}
+path.net { /* Net outline */
+	fill: none;
+	stroke: #777;
+}
